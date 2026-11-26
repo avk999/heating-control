@@ -196,9 +196,21 @@ headroom).
 
 ### Alerts
 
-`HeatingDependencyUnavailable` fires when an entity in `heating_entity_dependency` is not
-available in HA for 10 min. `HeatingDependencyListMissing` fires when the list itself is not
-exported, which would make the first alert silent.
+In `prometheus/heating.rules.yaml`. Fire counts are from a replay of the 30 days to
+26 Nov 2026.
+
+| alert | fires when | replay |
+|---|---|---|
+| `HeatingDependencyUnavailable` | an entity in `heating_entity_dependency` is not available in HA for 10 min | n/a |
+| `HeatingDependencyListMissing` | the list itself is not exported, which would make the first alert silent | n/a |
+| `HeatingCannotHeat` | demand above 1 K for 60 min while the zone's `cmd_headroom` is 0 or the flow command is at 75 C | 0 |
+| `HeatingValveOpenWhileWarm` | demand below -0.7 K for 60 min in heat mode while the zone's TRV reports `heating` and the boiler is commanded above 10 C; Zigbee TRVs only | 3 |
+| `OTGWStale` | the OTGW return temperature on `climate.boiler_direct` has not changed for 60 min (plus 10 min) while boiler control is on | 0 |
+| `BoilerLowWaterPressure` | CH pressure below 1 bar (warning) or 0.9 bar (critical) for 10 min | n/a |
+| `BoilerFault`, `BoilerServiceRequest` | the boiler reports a fault or a service request over OpenTherm for 10 min | n/a |
+
+The boiler rules use this site's `opentherm_gw` entity ids; replace them. Why the
+conditions are what they are: [DETAILS.md](DETAILS.md#alert-conditions).
 
 ### Logs
 

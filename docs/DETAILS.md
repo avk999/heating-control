@@ -341,6 +341,26 @@ write counts are per valve or for the house was not recorded.
   Stacking P and I mixed colours where they had opposite signs, and a filled P+I made 0 look
   like a switch point.
 
+## Alert conditions
+
+Replayed over the 30 days to 26 Nov 2026.
+
+- A deficit alone is not a usable alert: above 1 K for 60 min it fired on scheduled evening
+  and morning ramps, and still in 62 five-minute samples with a 3 h hold. Slow recoveries
+  are a comfort question, not a fault. `HeatingCannotHeat` therefore also requires that the
+  controller has no authority left; that combination did not occur.
+- An overshoot alone, or with the boiler firing, fired in every zone for hundreds of samples:
+  rooms gain heat passively while another zone drives the boiler. Requiring the zone's own
+  TRV to report `heating` left 3 episodes, all real: twice the bedroom TRV integral (about
+  4.9 K) held the valve open for 1.2 to 2.6 h after the night target dropped, once a
+  Eurotronic Spirit in `system_mode: auto`. The first two show that the TRV integral is not
+  corrected when the target drops, unlike the PID integral.
+- `climate.boiler_direct` is an optimistic MQTT entity without an availability topic, so it
+  stays available when the OTGW stops publishing (*inferred* from the HA MQTT
+  configuration), and `HeatingDependencyUnavailable` cannot detect a dead gateway.
+  `OTGWStale` uses the return temperature instead: its longest flat run was 0.7 h, and a
+  60 min window never occurred.
+
 ## Evaluating a change
 
 Changes were judged by a comfort score, kept out of the dashboard because its exclusions are

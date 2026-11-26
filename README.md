@@ -71,7 +71,7 @@ Setup, every tunable value, and the known pitfalls are in
 | `flows/heating-controls.json` | Heating Controls tab: per-zone mode and target schedules |
 | `grafana/heating-operation.json` | Grafana dashboard, imported with a Prometheus datasource input |
 | `ha/` | Example HA configuration: boiler climate entity, OTGW keepalive, thermostats |
-| `prometheus/heating.rules.yaml` | Alert on an unavailable HA entity the flow depends on |
+| `prometheus/heating.rules.yaml` | Alerts: unavailable dependency, zone that cannot be heated, valve open in a warm room, stale OTGW, boiler pressure and faults |
 | `docs/USER_GUIDE.md` | Installation, tunables, observability, pitfalls |
 | `docs/DETAILS.md` | Design decisions, measurements, rejected alternatives |
 

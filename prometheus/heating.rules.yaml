@@ -21,3 +21,78 @@ groups:
         annotations:
           summary: "heating_entity_dependency is not exported by node-red"
           description: "HeatingDependencyUnavailable cannot fire while this fires."
+
+      # A zone more than 1 K short while its controller has no authority left: the TRV command
+      # is at its ceiling or the boiler is at full flow temperature. Normal ramps do not fire it.
+      - alert: HeatingCannotHeat
+        expr: |
+          max by (zone) (heating_demand{zone!="backup"}) > 1
+          and on(zone)
+          (
+              max by (zone) (heating_flags{flag="cmd_headroom"}) <= 0
+            or on(zone)
+              max by (zone) (heating_demand{zone!="backup"}) and on() max(pid_component{component="payload"}) >= 74.5
+          )
+        for: 60m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Zone {{ $labels.zone }} is {{ $value }} K short with no control authority left"
+      # Zigbee TRVs only: the LC-13 reports no valve state.
+      - alert: HeatingValveOpenWhileWarm
+        expr: |
+          max by (zone) (heating_demand{zone!="backup"}) < -0.7
+          and on(zone) max by (zone) (label_replace(homeassistant_climate_mode{mode="heat", entity=~"climate\\..*_thermostat"}, "zone", "$1", "entity", "climate\\.(.*)_thermostat")) == 1
+          and on(zone) max by (zone) (label_replace(homeassistant_climate_action{action="heating", entity=~"climate\\.trv_.*"}, "zone", "$1", "entity", "climate\\.trv_(.*)")) == 1
+          and on() max(pid_component{component="payload"}) > 10
+        for: 60m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TRV in {{ $labels.zone }} reports heating while the room is above target (demand {{ $value }} K)"
+          description: "Check the TRV integral after a target drop, or a TRV controlling itself (Eurotronic auto mode)."
+      # climate.boiler_direct is an optimistic MQTT climate, so it stays available when the OTGW
+      # stops publishing; the return temperature (Tret) going flat detects that.
+      - alert: OTGWStale
+        expr: |
+          changes(max(homeassistant_climate_current_temperature_celsius{entity="climate.boiler_direct"})[60m:1m]) == 0
+          and on() max(homeassistant_input_boolean_state{entity="input_boolean.boileroverrideenable"}) == 1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No OTGW return temperature update for 70 min while boiler control is on"
+
+  # Boiler health from the HA opentherm_gw integration. The entity ids are this site's
+  # (gateway id OTGWNEW); replace them with yours. Pressure thresholds suit a sealed system
+  # filled to about 1.5 bar.
+  - name: boiler.rules
+    rules:
+      - alert: BoilerLowWaterPressure
+        expr: homeassistant_sensor_unit_bar{entity="sensor.opentherm_gateway_otgwnew_otgwnew_water_pressure_in_ch_circuit"} < 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Boiler water pressure {{ $value }} bar"
+      - alert: BoilerLowWaterPressure
+        expr: homeassistant_sensor_unit_bar{entity="sensor.opentherm_gateway_otgwnew_otgwnew_water_pressure_in_ch_circuit"} < 0.9
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Boiler water pressure {{ $value }} bar"
+      - alert: BoilerFault
+        expr: homeassistant_binary_sensor_state{entity="binary_sensor.opentherm_gateway_otgwnew_otgwnew_fault"} > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Boiler reports a fault over OpenTherm"
+      - alert: BoilerServiceRequest
+        expr: homeassistant_binary_sensor_state{entity="binary_sensor.opentherm_gateway_otgwnew_otgwnew_service_request"} > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Boiler requests service over OpenTherm"
