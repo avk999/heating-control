@@ -55,8 +55,9 @@ was tried and held stale values. So room temperature is never routed through the
 
 ### Room sensors
 
-Three zones use Bluetooth sensors bridged to MQTT by Tasmota, publishing every 300 s. They
-sometimes stop, and HA keeps serving the last value. Healthy sensors hold one value for up to
+Workshop, nursery and drawing room use Bluetooth sensors bridged to MQTT by Tasmota,
+publishing every 300 s. They sometimes stop, and HA keeps serving the last value. Bedroom and
+living room use Zigbee sensors through Zigbee2MQTT. Healthy sensors hold one value for up to
 7.7 h overnight.
 
 ## Boiler loop
@@ -260,7 +261,7 @@ and another warm.
   overnight. So no-change is a 12 h backstop.
 - HA `last_updated` freezes together with the value and is not a liveness signal; HA
   availability showed 0 unavailable samples in 30 days before `expire_after` was set.
-- `expire_after: 900` on the MQTT sensors makes a silent sensor `unavailable` in 15 min, and
+- `expire_after: 900` on the three Tasmota BLE sensors makes a silent sensor `unavailable` in 15 min, and
   the thermostat then reports `current_temperature` null, which the flow treats as stuck at
   once. Basis: in 30 days of ~25000 publishes there were no gaps between 330 and 930 s.
 
