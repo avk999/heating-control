@@ -13,7 +13,7 @@ measurements from that house; [docs/DETAILS.md](docs/DETAILS.md) has the numbers
 
 - A boiler thermostat measures one room. The other rooms are guessed.
 - A TRV regulates on its own sensor, which is next to a hot radiator and often behind a
-  curtain. Here the error between TRV sensor and room sensor changed by about 2.4 K with
+  curtain. Here the error between TRV sensor and room sensor changed by about 3 K with
   valve state, so no static calibration offset is right in both states.
 - Rooms are used on different schedules, and one room's demand should not overheat the
   others.
@@ -30,16 +30,16 @@ measurements from that house; [docs/DETAILS.md](docs/DETAILS.md) has the numbers
   writes the TRV setpoint. The integral absorbs the TRV's own sensor bias. A write is sent
   only when the command differs from what the TRV reports by 1 K, because the TRVs are
   battery powered.
-- **Integral correction.** When the leading room's mode or target changes, or a room
-  warms by 2 K in 30 min from a heat source the loop did not command (sun, fireplace), the
-  PID integral is corrected by the error step so the loop does not spend hours unwinding
-  stale history.
+- **Integral correction.** When the leading room's own mode or target changes, the PID
+  integral is corrected by the resulting error step. When any room warms by 2 K in 30 min
+  while the leader is above target (sun, fireplace), the rise is added to it. Either way the
+  loop does not spend hours unwinding stale history.
 - **Sensor health.** A room whose sensor is unavailable, or unchanged for 12 h, uses the mean
   of the healthy rooms.
 - **Scheduling.** A second flow sets each room's HA thermostat mode and target from cron
   schedules, radar presence and a door contact.
 - **Hand-over.** Two HA switches enable boiler and TRV control. Turning boiler control off
-  sends control setpoint 0, which returns the boiler to its own thermostat. Turning TRV
+  sends control setpoint 0, which returns the boiler to the physical thermostat. Turning TRV
   control off opens every valve.
 
 ## Requirements
@@ -54,7 +54,8 @@ Tested with these versions:
 | node-red-contrib-cron-plus | 1.5.7 |
 | node-red-contrib-prometheus-exporter | 1.0.5 |
 | Home Assistant | 2024.9.3, with the `prometheus` integration |
-| OTGW | NodoShop OTGW with OTGW-firmware, MQTT topics as in `ha/boiler.yaml` |
+| OTGW | NodoShop OTGW with OTGW-firmware, MQTT topics as in `ha/boiler.yaml`, wired between a physical OpenTherm room thermostat and the boiler |
+| HA `opentherm_gw` integration | for the dashboard's boiler panels only |
 | Grafana | 11.5.1 |
 
 The HA side needs, per zone, `climate.<zone>_thermostat` (a `generic_thermostat`) and

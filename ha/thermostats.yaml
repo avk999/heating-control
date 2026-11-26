@@ -9,7 +9,7 @@
   target_sensor: sensor.workshop_temperature
 
 - platform: generic_thermostat
-  name: Living Room Thermostat
+  name: Livingroom Thermostat
   unique_id: synth_thermostat_livingroom
   heater: input_boolean.empty_switch
   target_sensor: sensor.livingroom_temperature
