@@ -1,0 +1,23 @@
+# Requires the Home Assistant prometheus integration (homeassistant_entity_available) and a
+# scrape of the Node-RED exporter under job="node-red".
+groups:
+  - name: heating.rules
+    rules:
+      - alert: HeatingDependencyUnavailable
+        expr: |
+          heating_entity_dependency == 1
+            unless on(entity) (homeassistant_entity_available == 1)
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Heating dependency {{ $labels.entity }} unavailable for 10m"
+          description: "Role {{ $labels.role }}, zone {{ $labels.zone }}. Unavailable, unknown, or not exported by HA."
+      - alert: HeatingDependencyListMissing
+        expr: absent(heating_entity_dependency{job="node-red"})
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "heating_entity_dependency is not exported by node-red"
+          description: "HeatingDependencyUnavailable cannot fire while this fires."

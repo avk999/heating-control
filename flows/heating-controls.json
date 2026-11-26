@@ -1,0 +1,955 @@
+[
+    {
+        "id": "3076cc48ebbebab4",
+        "type": "tab",
+        "label": "Heating Controls",
+        "disabled": false,
+        "info": "Zone hvac_mode and target scheduling.\ndrawing_room  heat asserted 06:00-06:59, off 17:00\nbedroom       pre-heat 17:30-19:59, then presence (15 min on / 10 min off);\n              20:00 off only if unoccupied; target 19.5 at 17:30, 18 at 23:30\nnursery       pre-heat 18:00-19:59, then presence (15 min on / 10 min off);\n              20:00 off only if unoccupied; target 19 at 18:00, 18 at 23:00\nlivingroom    heat 06:00-19:59 while the backyard door is closed; off 20:00\nworkshop      cron disabled, manual control\n",
+        "env": []
+    },
+    {
+        "id": "e831cadc54dbc4a8",
+        "type": "cronplus",
+        "z": "3076cc48ebbebab4",
+        "name": "drawing room mode",
+        "outputField": "payload",
+        "timeZone": "",
+        "persistDynamic": true,
+        "commandResponseMsgOutput": "output1",
+        "outputs": 1,
+        "options": [
+            {
+                "name": "schedule3",
+                "topic": "climate.drawing_room_thermostat",
+                "payloadType": "str",
+                "payload": "off",
+                "expressionType": "cron",
+                "expression": "0 0 17 * * *",
+                "location": "",
+                "offset": "0",
+                "solarType": "all",
+                "solarEvents": "sunrise,sunset"
+            },
+            {
+                "name": "schedule2",
+                "topic": "climate.drawing_room_thermostat",
+                "payloadType": "str",
+                "payload": "heat",
+                "expressionType": "cron",
+                "expression": "0 * 6 * * *",
+                "location": "",
+                "offset": "0",
+                "solarType": "all",
+                "solarEvents": "sunrise,sunset"
+            }
+        ],
+        "x": 160,
+        "y": 80,
+        "wires": [
+            [
+                "6bdf02c38888dc3c"
+            ]
+        ]
+    },
+    {
+        "id": "6bdf02c38888dc3c",
+        "type": "api-call-service",
+        "z": "3076cc48ebbebab4",
+        "name": "mode_from_cron",
+        "server": "efa2d3ede9cd45f8",
+        "version": 7,
+        "debugenabled": false,
+        "action": "climate.set_hvac_mode",
+        "floorId": [],
+        "areaId": [],
+        "deviceId": [],
+        "entityId": [],
+        "labelId": [],
+        "data": "{\"entity_id\": topic,\t\"hvac_mode\":payload}",
+        "dataType": "jsonata",
+        "mergeContext": "",
+        "mustacheAltTags": false,
+        "outputProperties": [],
+        "queue": "none",
+        "blockInputOverrides": false,
+        "domain": "climate",
+        "service": "set_hvac_mode",
+        "x": 590,
+        "y": 100,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "e13dfcaa3fb84372",
+        "type": "cronplus",
+        "z": "3076cc48ebbebab4",
+        "name": "nursery_mode",
+        "outputField": "payload",
+        "timeZone": "",
+        "persistDynamic": false,
+        "commandResponseMsgOutput": "output1",
+        "outputs": 1,
+        "options": [
+            {
+                "name": "schedule1",
+                "topic": "climate.nursery_thermostat",
+                "payloadType": "str",
+                "payload": "heat",
+                "expressionType": "cron",
+                "expression": "0 */5 18-19 * * *",
+                "location": "",
+                "offset": "0",
+                "solarType": "all",
+                "solarEvents": "sunrise,sunset"
+            },
+            {
+                "name": "schedule_off",
+                "topic": "climate.nursery_thermostat",
+                "payloadType": "str",
+                "payload": "off",
+                "expressionType": "cron",
+                "expression": "0 0 20 * * *",
+                "location": "",
+                "offset": "0",
+                "solarType": "all",
+                "solarEvents": "sunrise,sunset"
+            }
+        ],
+        "x": 160,
+        "y": 160,
+        "wires": [
+            [
+                "c0ffee26nursw01"
+            ]
+        ]
+    },
+    {
+        "id": "5b54991a45a752fe",
+        "type": "cronplus",
+        "z": "3076cc48ebbebab4",
+        "name": "bedroom_mode",
+        "outputField": "payload",
+        "timeZone": "",
+        "persistDynamic": false,
+        "commandResponseMsgOutput": "output1",
+        "outputs": 1,
+        "options": [
+            {
+                "name": "schedule1",
+                "topic": "climate.bedroom_thermostat",
+                "payloadType": "str",
+                "payload": "heat",
+                "expressionType": "cron",
+                "expression": "0 30-55/5 17 * * *",
+                "location": "",
+                "offset": "0",
+                "solarType": "all",
+                "solarEvents": "sunrise,sunset"
+            },
+            {
+                "name": "schedule2",
+                "topic": "climate.bedroom_thermostat",
+                "payloadType": "str",
+                "payload": "heat",
+                "expressionType": "cron",
+                "expression": "0 */5 18-19 * * *",
+                "location": "",
+                "offset": "0",
+                "solarType": "all",
+                "solarEvents": "sunrise,sunset"
+            },
+            {
+                "name": "schedule_off",
+                "topic": "climate.bedroom_thermostat",
+                "payloadType": "str",
+                "payload": "off",
+                "expressionType": "cron",
+                "expression": "0 0 20 * * *",
+                "location": "",
+                "offset": "0",
+                "solarType": "all",
+                "solarEvents": "sunrise,sunset"
+            }
+        ],
+        "x": 160,
+        "y": 240,
+        "wires": [
+            [
+                "c0ffee26bedsw01"
+            ]
+        ]
+    },
+    {
+        "id": "71ee0f3cb53c28b0",
+        "type": "cronplus",
+        "z": "3076cc48ebbebab4",
+        "name": "living room mode",
+        "outputField": "payload",
+        "timeZone": "",
+        "persistDynamic": false,
+        "commandResponseMsgOutput": "output1",
+        "outputs": 1,
+        "options": [
+            {
+                "name": "schedule3",
+                "topic": "climate.livingroom_thermostat",
+                "payloadType": "str",
+                "payload": "off",
+                "expressionType": "cron",
+                "expression": "0 0 20 * * *",
+                "location": "",
+                "offset": "0",
+                "solarType": "all",
+                "solarEvents": "sunrise,sunset"
+            },
+            {
+                "name": "schedule2",
+                "topic": "climate.livingroom_thermostat",
+                "payloadType": "str",
+                "payload": "heat",
+                "expressionType": "cron",
+                "expression": "0 * 6-19 * * *",
+                "location": "",
+                "offset": "0",
+                "solarType": "all",
+                "solarEvents": "sunrise,sunset"
+            }
+        ],
+        "x": 160,
+        "y": 620,
+        "wires": [
+            [
+                "5de32d1cca7965ac"
+            ]
+        ]
+    },
+    {
+        "id": "64450d378ea3bfd2",
+        "type": "cronplus",
+        "z": "3076cc48ebbebab4",
+        "d": true,
+        "name": "workshop mode",
+        "outputField": "payload",
+        "timeZone": "",
+        "persistDynamic": true,
+        "commandResponseMsgOutput": "output1",
+        "outputs": 1,
+        "options": [
+            {
+                "name": "schedule3",
+                "topic": "climate.workshop_thermostat",
+                "payloadType": "str",
+                "payload": "off",
+                "expressionType": "cron",
+                "expression": "0 0 18 * * * ",
+                "location": "",
+                "offset": "0",
+                "solarType": "all",
+                "solarEvents": "sunrise,sunset"
+            },
+            {
+                "name": "schedule2",
+                "topic": "climate.workshop_thermostat",
+                "payloadType": "str",
+                "payload": "heat",
+                "expressionType": "cron",
+                "expression": "0 30 8 * * 1-5 *",
+                "location": "",
+                "offset": "0",
+                "solarType": "all",
+                "solarEvents": "sunrise,sunset"
+            }
+        ],
+        "x": 160,
+        "y": 820,
+        "wires": [
+            [
+                "6bdf02c38888dc3c"
+            ]
+        ]
+    },
+    {
+        "id": "fabcf7a2f2f686ef",
+        "type": "server-state-changed",
+        "z": "3076cc48ebbebab4",
+        "name": "backyard door ope",
+        "server": "efa2d3ede9cd45f8",
+        "version": 6,
+        "outputs": 1,
+        "exposeAsEntityConfig": "",
+        "entities": {
+            "entity": [
+                "binary_sensor.backyard_door_sensor_contact"
+            ],
+            "substring": [],
+            "regex": []
+        },
+        "outputInitially": false,
+        "stateType": "str",
+        "ifState": "",
+        "ifStateType": "str",
+        "ifStateOperator": "is",
+        "outputOnlyOnStateChange": true,
+        "for": "5",
+        "forType": "num",
+        "forUnits": "minutes",
+        "ignorePrevStateNull": false,
+        "ignorePrevStateUnknown": false,
+        "ignorePrevStateUnavailable": false,
+        "ignoreCurrentStateUnknown": false,
+        "ignoreCurrentStateUnavailable": false,
+        "outputProperties": [
+            {
+                "property": "payload",
+                "propertyType": "msg",
+                "value": "",
+                "valueType": "entityState"
+            },
+            {
+                "property": "data",
+                "propertyType": "msg",
+                "value": "",
+                "valueType": "eventData"
+            },
+            {
+                "property": "topic",
+                "propertyType": "msg",
+                "value": "",
+                "valueType": "triggerId"
+            }
+        ],
+        "x": 160,
+        "y": 720,
+        "wires": [
+            [
+                "e2840d0a024e9880"
+            ]
+        ]
+    },
+    {
+        "id": "e2840d0a024e9880",
+        "type": "function",
+        "z": "3076cc48ebbebab4",
+        "name": "door open -> force off",
+        "func": "// backyard door OPEN  -> force living room off\n// door CLOSED -> emit nothing; the 06:00-19:59 cron restores heat within 60 s\nif (msg.payload !== \"on\") { return null; }\nmsg.topic   = \"climate.livingroom_thermostat\";\nmsg.payload = \"off\";\nreturn msg;\n",
+        "outputs": 1,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 430,
+        "y": 720,
+        "wires": [
+            [
+                "6bdf02c38888dc3c"
+            ]
+        ]
+    },
+    {
+        "id": "e68713cd7beaa4ef",
+        "type": "server-state-changed",
+        "z": "3076cc48ebbebab4",
+        "name": "nurery presence off",
+        "server": "efa2d3ede9cd45f8",
+        "version": 6,
+        "outputs": 2,
+        "exposeAsEntityConfig": "",
+        "entities": {
+            "entity": [
+                "binary_sensor.nursery_presence_radar_presence"
+            ],
+            "substring": [],
+            "regex": []
+        },
+        "outputInitially": true,
+        "stateType": "str",
+        "ifState": "off",
+        "ifStateType": "str",
+        "ifStateOperator": "is",
+        "outputOnlyOnStateChange": true,
+        "for": "10",
+        "forType": "num",
+        "forUnits": "minutes",
+        "ignorePrevStateNull": true,
+        "ignorePrevStateUnknown": true,
+        "ignorePrevStateUnavailable": true,
+        "ignoreCurrentStateUnknown": true,
+        "ignoreCurrentStateUnavailable": true,
+        "outputProperties": [
+            {
+                "property": "payload",
+                "propertyType": "msg",
+                "value": "",
+                "valueType": "entityState"
+            },
+            {
+                "property": "data",
+                "propertyType": "msg",
+                "value": "",
+                "valueType": "eventData"
+            },
+            {
+                "property": "topic",
+                "propertyType": "msg",
+                "value": "climate.nursery_thermostat",
+                "valueType": "str"
+            }
+        ],
+        "x": 160,
+        "y": 530,
+        "wires": [
+            [
+                "362c3fa9ef3fdae8"
+            ],
+            []
+        ]
+    },
+    {
+        "id": "362c3fa9ef3fdae8",
+        "type": "function",
+        "z": "3076cc48ebbebab4",
+        "name": "presence -> mode",
+        "func": "// topic carries the thermostat, set on each presence node.\nmsg.payload = (msg.payload === \"on\") ? \"heat\" : \"off\";\n\n// Drop a presence-driven 'off' while the zone's pre-heat cron is still ticking.\n// The crons assert heat across their whole window, so an \"off\" here would survive only\n// until the next tick and the two controls would simply alternate. Measured 8 Nov: three\n// such flaps in 31 min stacked the PID integral 0.28 -> 3.27 and cut the boiler command\n// 58 -> 33 with the coldest room 1.5 K short; each flap also slams the valve to 16.\n// The window is inferred from the tick, so the hours live only in the cron expression.\n// Tolerance 900 s against a 300 s tick rate, so three ticks can be missed or delayed\n// before the suppression lapses. The cost is that presence-off stays blocked for up to\n// 15 min after the window's last tick, which only delays the evening release.\nvar seen = flow.get('preheat_tick') || {}\nvar last = seen[msg.topic]\nif (msg.payload === \"off\" && last && Date.now() - last < 900000) {\n    node.warn('presence off for ' + msg.topic + ' ignored: pre-heat cron still ticking')\n    return null\n}\n\nreturn msg;\n",
+        "outputs": 1,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 490,
+        "y": 400,
+        "wires": [
+            [
+                "6bdf02c38888dc3c"
+            ]
+        ]
+    },
+    {
+        "id": "8b20436c66dff142",
+        "type": "server-state-changed",
+        "z": "3076cc48ebbebab4",
+        "name": "nursery presence on",
+        "server": "efa2d3ede9cd45f8",
+        "version": 6,
+        "outputs": 2,
+        "exposeAsEntityConfig": "",
+        "entities": {
+            "entity": [
+                "binary_sensor.nursery_presence_radar_presence"
+            ],
+            "substring": [],
+            "regex": []
+        },
+        "outputInitially": true,
+        "stateType": "str",
+        "ifState": "on",
+        "ifStateType": "str",
+        "ifStateOperator": "is",
+        "outputOnlyOnStateChange": true,
+        "for": "15",
+        "forType": "num",
+        "forUnits": "minutes",
+        "ignorePrevStateNull": true,
+        "ignorePrevStateUnknown": true,
+        "ignorePrevStateUnavailable": true,
+        "ignoreCurrentStateUnknown": true,
+        "ignoreCurrentStateUnavailable": true,
+        "outputProperties": [
+            {
+                "property": "payload",
+                "propertyType": "msg",
+                "value": "",
+                "valueType": "entityState"
+            },
+            {
+                "property": "data",
+                "propertyType": "msg",
+                "value": "",
+                "valueType": "eventData"
+            },
+            {
+                "property": "topic",
+                "propertyType": "msg",
+                "value": "climate.nursery_thermostat",
+                "valueType": "str"
+            }
+        ],
+        "x": 160,
+        "y": 470,
+        "wires": [
+            [
+                "362c3fa9ef3fdae8"
+            ],
+            []
+        ]
+    },
+    {
+        "id": "9de8f9d3909de30a",
+        "type": "server-state-changed",
+        "z": "3076cc48ebbebab4",
+        "name": "bedroom presence off",
+        "server": "efa2d3ede9cd45f8",
+        "version": 6,
+        "outputs": 2,
+        "exposeAsEntityConfig": "",
+        "entities": {
+            "entity": [
+                "binary_sensor.bedroom_radar_2_occupancy"
+            ],
+            "substring": [],
+            "regex": []
+        },
+        "outputInitially": true,
+        "stateType": "str",
+        "ifState": "off",
+        "ifStateType": "str",
+        "ifStateOperator": "is",
+        "outputOnlyOnStateChange": true,
+        "for": "10",
+        "forType": "num",
+        "forUnits": "minutes",
+        "ignorePrevStateNull": true,
+        "ignorePrevStateUnknown": true,
+        "ignorePrevStateUnavailable": true,
+        "ignoreCurrentStateUnknown": true,
+        "ignoreCurrentStateUnavailable": true,
+        "outputProperties": [
+            {
+                "property": "payload",
+                "propertyType": "msg",
+                "value": "",
+                "valueType": "entityState"
+            },
+            {
+                "property": "data",
+                "propertyType": "msg",
+                "value": "",
+                "valueType": "eventData"
+            },
+            {
+                "property": "topic",
+                "propertyType": "msg",
+                "value": "climate.bedroom_thermostat",
+                "valueType": "str"
+            }
+        ],
+        "x": 160,
+        "y": 390,
+        "wires": [
+            [
+                "362c3fa9ef3fdae8"
+            ],
+            []
+        ]
+    },
+    {
+        "id": "e4360835d836dede",
+        "type": "server-state-changed",
+        "z": "3076cc48ebbebab4",
+        "name": "bedroom presence on",
+        "server": "efa2d3ede9cd45f8",
+        "version": 6,
+        "outputs": 2,
+        "exposeAsEntityConfig": "",
+        "entities": {
+            "entity": [
+                "binary_sensor.bedroom_radar_2_occupancy"
+            ],
+            "substring": [],
+            "regex": []
+        },
+        "outputInitially": true,
+        "stateType": "str",
+        "ifState": "on",
+        "ifStateType": "str",
+        "ifStateOperator": "is",
+        "outputOnlyOnStateChange": true,
+        "for": "15",
+        "forType": "num",
+        "forUnits": "minutes",
+        "ignorePrevStateNull": true,
+        "ignorePrevStateUnknown": true,
+        "ignorePrevStateUnavailable": true,
+        "ignoreCurrentStateUnknown": true,
+        "ignoreCurrentStateUnavailable": true,
+        "outputProperties": [
+            {
+                "property": "payload",
+                "propertyType": "msg",
+                "value": "",
+                "valueType": "entityState"
+            },
+            {
+                "property": "data",
+                "propertyType": "msg",
+                "value": "",
+                "valueType": "eventData"
+            },
+            {
+                "property": "topic",
+                "propertyType": "msg",
+                "value": "climate.bedroom_thermostat",
+                "valueType": "str"
+            }
+        ],
+        "x": 160,
+        "y": 330,
+        "wires": [
+            [
+                "362c3fa9ef3fdae8"
+            ],
+            []
+        ]
+    },
+    {
+        "id": "5de32d1cca7965ac",
+        "type": "switch",
+        "z": "3076cc48ebbebab4",
+        "name": "lr: heat or off",
+        "property": "payload",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "eq",
+                "v": "heat",
+                "vt": "str"
+            },
+            {
+                "t": "else"
+            }
+        ],
+        "checkall": "false",
+        "repair": false,
+        "outputs": 2,
+        "x": 400,
+        "y": 620,
+        "wires": [
+            [
+                "97cf71f66d9ffeaa"
+            ],
+            [
+                "6bdf02c38888dc3c"
+            ]
+        ]
+    },
+    {
+        "id": "97cf71f66d9ffeaa",
+        "type": "api-current-state",
+        "z": "3076cc48ebbebab4",
+        "name": "backyard door closed?",
+        "server": "efa2d3ede9cd45f8",
+        "version": 3,
+        "outputs": 2,
+        "halt_if": "off",
+        "halt_if_type": "str",
+        "halt_if_compare": "is",
+        "entity_id": "binary_sensor.backyard_door_sensor_contact",
+        "state_type": "str",
+        "blockInputOverrides": false,
+        "outputProperties": [],
+        "for": "0",
+        "forType": "num",
+        "forUnits": "minutes",
+        "override_topic": false,
+        "state_location": "",
+        "override_payload": "none",
+        "entity_location": "",
+        "override_data": "none",
+        "x": 660,
+        "y": 620,
+        "wires": [
+            [
+                "6bdf02c38888dc3c"
+            ],
+            []
+        ]
+    },
+    {
+        "id": "2580758eede014b2",
+        "type": "api-call-service",
+        "z": "3076cc48ebbebab4",
+        "name": "temp_from_cron",
+        "server": "efa2d3ede9cd45f8",
+        "version": 7,
+        "debugenabled": false,
+        "action": "climate.set_temperature",
+        "floorId": [],
+        "areaId": [],
+        "deviceId": [],
+        "entityId": [],
+        "labelId": [],
+        "data": "{\"entity_id\": topic,\t\"temperature\":payload}",
+        "dataType": "jsonata",
+        "mergeContext": "",
+        "mustacheAltTags": false,
+        "outputProperties": [],
+        "queue": "none",
+        "blockInputOverrides": false,
+        "domain": "climate",
+        "service": "set_temperature",
+        "x": 1180,
+        "y": 340,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "a1234d15d0631a81",
+        "type": "cronplus",
+        "z": "3076cc48ebbebab4",
+        "name": "bedroom temp",
+        "outputField": "payload",
+        "timeZone": "",
+        "persistDynamic": false,
+        "commandResponseMsgOutput": "output1",
+        "outputs": 1,
+        "options": [
+            {
+                "name": "day",
+                "topic": "climate.bedroom_thermostat",
+                "payloadType": "num",
+                "payload": "19.5",
+                "expressionType": "cron",
+                "expression": "0 30 17 * * *",
+                "location": "",
+                "offset": "0",
+                "solarType": "all",
+                "solarEvents": "sunrise,sunset"
+            },
+            {
+                "name": "night",
+                "topic": "climate.bedroom_thermostat",
+                "payloadType": "num",
+                "payload": "18",
+                "expressionType": "cron",
+                "expression": "0 30 23 * * *",
+                "location": "",
+                "offset": "0",
+                "solarType": "all",
+                "solarEvents": "sunrise,sunset"
+            }
+        ],
+        "x": 1060,
+        "y": 220,
+        "wires": [
+            [
+                "2580758eede014b2"
+            ]
+        ]
+    },
+    {
+        "id": "24b2c942fcf52945",
+        "type": "cronplus",
+        "z": "3076cc48ebbebab4",
+        "name": "nursery temp",
+        "outputField": "payload",
+        "timeZone": "",
+        "persistDynamic": false,
+        "commandResponseMsgOutput": "output1",
+        "outputs": 1,
+        "options": [
+            {
+                "name": "day",
+                "topic": "climate.nursery_thermostat",
+                "payloadType": "num",
+                "payload": "19",
+                "expressionType": "cron",
+                "expression": "0 0 18 * * *",
+                "location": "",
+                "offset": "0",
+                "solarType": "all",
+                "solarEvents": "sunrise,sunset"
+            },
+            {
+                "name": "night",
+                "topic": "climate.nursery_thermostat",
+                "payloadType": "num",
+                "payload": "18",
+                "expressionType": "cron",
+                "expression": "0 0 23 * * *",
+                "location": "",
+                "offset": "0",
+                "solarType": "all",
+                "solarEvents": "sunrise,sunset"
+            }
+        ],
+        "x": 950,
+        "y": 340,
+        "wires": [
+            [
+                "2580758eede014b2"
+            ]
+        ]
+    },
+    {
+        "id": "c0ffee26preheat1",
+        "type": "function",
+        "z": "3076cc48ebbebab4",
+        "name": "note preheat tick",
+        "func": "// The pre-heat crons tick repeatedly for the whole window, so a recent tick means\n// the window is open. Recorded here so the presence branch can tell, which keeps the\n// hours in the cron expressions and nowhere else.\nif (msg.payload === 'heat') {\n    var seen = flow.get('preheat_tick') || {}\n    seen[msg.topic] = Date.now()\n    flow.set('preheat_tick', seen)\n}\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 330,
+        "y": 240,
+        "wires": [
+            [
+                "6bdf02c38888dc3c"
+            ]
+        ]
+    },
+    {
+        "id": "c0ffee26bedsw01",
+        "type": "switch",
+        "z": "3076cc48ebbebab4",
+        "name": "bedroom: heat or off",
+        "property": "payload",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "eq",
+                "v": "heat",
+                "vt": "str"
+            },
+            {
+                "t": "else"
+            }
+        ],
+        "checkall": "false",
+        "repair": false,
+        "outputs": 2,
+        "x": 340,
+        "y": 240,
+        "wires": [
+            [
+                "c0ffee26preheat1"
+            ],
+            [
+                "c0ffee26bedck01"
+            ]
+        ]
+    },
+    {
+        "id": "c0ffee26bedck01",
+        "type": "api-current-state",
+        "z": "3076cc48ebbebab4",
+        "name": "bedroom unoccupied?",
+        "server": "efa2d3ede9cd45f8",
+        "version": 3,
+        "outputs": 2,
+        "halt_if": "off",
+        "halt_if_type": "str",
+        "halt_if_compare": "is",
+        "entity_id": "binary_sensor.bedroom_radar_2_occupancy",
+        "state_type": "str",
+        "blockInputOverrides": false,
+        "outputProperties": [],
+        "for": "0",
+        "forType": "num",
+        "forUnits": "minutes",
+        "override_topic": false,
+        "state_location": "",
+        "override_payload": "none",
+        "entity_location": "",
+        "override_data": "none",
+        "info": "Gate on the OFF branch only. The end-of-pre-heat cron must not switch a zone off\nwhile it is occupied: the presence-ON node has outputOnlyOnStateChange, so it fires\nonce per transition and would NOT re-fire to undo a wrongly sent off. The zone would\nthen stay off until the occupant left and returned.\nhalt_if 'off' sends to output 1 when the radar reads off (unoccupied) -> the off is\ndelivered. Occupied goes to output 2, wired nowhere, so the off is discarded.\nstate_location/override_* blank so the radar's own state does not overwrite the\npayload and topic the cron set.",
+        "x": 540,
+        "y": 300,
+        "wires": [
+            [
+                "6bdf02c38888dc3c"
+            ],
+            []
+        ]
+    },
+    {
+        "id": "c0ffee26nursw01",
+        "type": "switch",
+        "z": "3076cc48ebbebab4",
+        "name": "nursery: heat or off",
+        "property": "payload",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "eq",
+                "v": "heat",
+                "vt": "str"
+            },
+            {
+                "t": "else"
+            }
+        ],
+        "checkall": "false",
+        "repair": false,
+        "outputs": 2,
+        "x": 340,
+        "y": 160,
+        "wires": [
+            [
+                "c0ffee26preheat1"
+            ],
+            [
+                "c0ffee26nurck01"
+            ]
+        ]
+    },
+    {
+        "id": "c0ffee26nurck01",
+        "type": "api-current-state",
+        "z": "3076cc48ebbebab4",
+        "name": "nursery unoccupied?",
+        "server": "efa2d3ede9cd45f8",
+        "version": 3,
+        "outputs": 2,
+        "halt_if": "off",
+        "halt_if_type": "str",
+        "halt_if_compare": "is",
+        "entity_id": "binary_sensor.nursery_presence_radar_presence",
+        "state_type": "str",
+        "blockInputOverrides": false,
+        "outputProperties": [],
+        "for": "0",
+        "forType": "num",
+        "forUnits": "minutes",
+        "override_topic": false,
+        "state_location": "",
+        "override_payload": "none",
+        "entity_location": "",
+        "override_data": "none",
+        "info": "Gate on the OFF branch only. The end-of-pre-heat cron must not switch a zone off\nwhile it is occupied: the presence-ON node has outputOnlyOnStateChange, so it fires\nonce per transition and would NOT re-fire to undo a wrongly sent off. The zone would\nthen stay off until the occupant left and returned.\nhalt_if 'off' sends to output 1 when the radar reads off (unoccupied) -> the off is\ndelivered. Occupied goes to output 2, wired nowhere, so the off is discarded.\nstate_location/override_* blank so the radar's own state does not overwrite the\npayload and topic the cron set.",
+        "x": 540,
+        "y": 220,
+        "wires": [
+            [
+                "6bdf02c38888dc3c"
+            ],
+            []
+        ]
+    },
+    {
+        "id": "efa2d3ede9cd45f8",
+        "type": "server",
+        "name": "Home Assistant",
+        "version": 5,
+        "addon": false,
+        "rejectUnauthorizedCerts": false,
+        "ha_boolean": "y|yes|true|on|home|open",
+        "connectionDelay": true,
+        "cacheJson": true,
+        "heartbeat": true,
+        "heartbeatInterval": "30",
+        "areaSelector": "friendlyName",
+        "deviceSelector": "friendlyName",
+        "entitySelector": "friendlyName",
+        "statusSeparator": ": ",
+        "statusYear": "hidden",
+        "statusMonth": "short",
+        "statusDay": "numeric",
+        "statusHourCycle": "default",
+        "statusTimeFormat": "h:m",
+        "enableGlobalContextStore": false
+    }
+]

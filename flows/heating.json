@@ -1,0 +1,834 @@
+[
+    {
+        "id": "01c1e279c79fe308",
+        "type": "tab",
+        "label": "Heating v2",
+        "disabled": false,
+        "info": "Boiler + TRV control.\n\n* Boiler, every 15 s: the zone with the largest demand (target - room) leads; its error\n  feeds the PID node. Output 0 gives flow_idle (10 C), otherwise\n  flow_min + flow_span * raw^flow_exp, written as the OpenTherm control setpoint.\n  pb=6, so full output is reached at a 3 K room deficit.\n* TRV, every 10 s, 1 msg per 2 min per zone: per-zone PI on the room sensor, output is\n  the commanded TRV setpoint. Writes only when the command differs from the TRV's\n  reported setpoint by trv_write_step (1.0 C).\n* Stuck sensor: tier1 = current_temperature null/unavailable (immediate);\n  tier2 = no reading change for 12 h (backstop). A stuck zone inherits the mean of the\n  healthy zones. Tier1 needs expire_after on MQTT source sensors in HA.\n* Control setpoint 10 = idle (OTGW default, below the boiler's lower bound),\n  0 = hand control back to the thermostat\n  (0 is sent only by 'Set 0 to surrender boiler control').\n* All tunables are in the On Start block of 'init data'.\n",
+        "env": []
+    },
+    {
+        "id": "e5b9d0d8740b9fef",
+        "type": "function",
+        "z": "01c1e279c79fe308",
+        "name": "init data",
+        "func": "\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "// runs once at flow start\nvar zones = ['workshop','livingroom','bedroom','nursery','drawing_room']\nflow.set('zones', zones)\nflow.set('thermostats', {})\nflow.set('sensor_state', {})   // {zone:{lastVal,lastChangeTs,ageMs,stuck}}\nflow.set('effective', {})      // {zone: temperature actually used}\nflow.set('trv_state', {})      // {zone:{integral,lastSent,lastTs}}\n\n// ---- tunables -------------------------------------------------------\nflow.set('thermostat_off_temp', 16)      // target substituted when the zone's mode is off\nflow.set('off_lead_margin',    1.0)      // K above thermostat_off_temp; an OFF zone warmer\n                                         // than this cannot lead. Frost floor still applies below it.\n// TRV control: per-zone PI on the ROOM sensor, output is the commanded setpoint.\n// Uniform across all five zones (Danfoss LC-13, Eurotronic Spirit, Sonoff TRVZB),\n// so there are no per-model code paths. Each TRV keeps its own internal loop; the\n// integral absorbs its slowly varying sensor bias.\nflow.set('trv_off_temp',        16)      // commanded when the zone's mode is off\nflow.set('trv_kp',             2.0)      // K of setpoint offset per K of room error\nflow.set('trv_ti_s',          1800)      // integral time, s. Bias of ~2.4 K absorbed in ~1 h at 1 K error\nflow.set('trv_integral_clamp',   7)      // K, upper bound on the bias correction. Raised 5 -> 7 on\n                                         // 2026-11-20: the TRV head reads high when its own radiator is\n                                         // hot (18.8 -> 21.8 overnight while the room moved 18.2 -> 19.2),\n                                         // so the valve throttles itself while the room is still short.\n                                         // Measured 14 days: only bedroom (5.2% of samples) and livingroom\n                                         // (3.1%) ever reach the clamp; the other three never exceed 4.0.\n                                         // cmd_raw peaked at 27.9, so +2 stays inside the 30 ceiling.\n// Asymmetric lower bound. The integral's real job is absorbing the TRV's POSITIVE\n// sensor bias (valve reads warm), so it needs room to go up, not down. A large\n// negative integral only cancels the proportional term and holds the valve shut\n// against a genuine deficit. Measured 3 Nov: drawing_room sat 0.4-0.7 K ABOVE target\n// for 8 h with mode=heat, wound the integral to -1.05, then could not open when the\n// morning target rose: 20.0 + 2*0.3 - 1.05 = 19.55, at or below the room itself.\nflow.set('trv_integral_min',      0)      // K. Zero, not negative: a TRV command below the\n// zone's target cannot open the valve, so negative integral is dead range. Measured 5 Nov:\n// drawing_room sat at -0.413 with the proportional term zeroed by the deadband, giving a command\n// of 19.09 against a 19.5 target, and the room held 0.1-0.2 K short all night. Same reasoning\n// as the heating-only argument for the boiler PID: we have no cooling actuator.\nflow.set('trv_off_decay_s',   7200)      // s. Integral decay time constant while a zone is off; 2 h.\nflow.set('trv_deadband_k',     0.2)      // room error below this counts as zero\nflow.set('trv_write_step',     1.0)      // only write when the command moves this much\nflow.set('trv_min_setpoint',    16)\nflow.set('trv_max_setpoint',    30)\n\nflow.set('stuck_ms',  12*60*60*1000)     // BACKSTOP only: no reading change for 12 h.\n// Measured over 30 days: healthy sensors hold an identical value for up to 7.7 h\n// (nursery, overnight), so a 3 h threshold produced 19 false positives.\n// PRIMARY detection is current_temperature null/unavailable, which is immediate,\n// but that needs expire_after on the tasmota_ble mqtt sensors in HA.\n\n// OpenTherm control setpoint: 10 = \"no heat needed\", 0 = \"I do not control\"\n// (hardware backup takes over; 0 is sent only by the surrender path).\n// The bottom of the PID range must stay 10, never a real demand value.\n// Integral-step correction, see 'Select leader and feed to PID'.\nflow.set('pid_step_thresh',   0.8)      // K. Below this, config changes are small edits; above, mode flips.\nflow.set('pid_rise_k',          2)      // K. External heat source: rise over the window below.\nflow.set('pid_rise_window_s', 1800)     // 30 min. Heating alone never exceeded 1.0 K/30 min in 21 days.\nflow.set('pid_temp_hist',      {})      // {zone: [[ts,temp],...]} rolling, for the rise test\nflow.set('pid_rise_latch',   null)      // zone currently counted as an external-heat episode\nflow.set('pid_prev_leader', null)      // gate: only the DEPARTING leader's own config change counts\nflow.set('pid_pb',              6)      // must match the PID node's proportional band\nflow.set('pid_prev_err',     null)\nflow.set('pid_last_integral',null)\n\nflow.set('flow_idle',           10)      // PID exactly 0 -> 10 C = no heat needed\nflow.set('flow_min',            20)      // any positive output starts here: radiators\n                                         // below 20 C transfer almost nothing, and idle\n                                         // water sits at 25 C median, so a command under\n                                         // 20 can never produce heat\nflow.set('flow_span',           55)      // PID 1.0 -> 75 C, still the ceiling\nflow.set('flow_exp',           1.3)      // cmd = min + span*raw^k. k>1 bends the middle down:\n                                         // zero-error point 47.5 -> 42.3 C, ceiling unchanged.\n                                         // Was 1.4 (40.8 C) 16-20 Nov. Lowered after measuring a\n                                         // 0.8 K overnight deficit commanding only 34.6 C, where the\n                                         // old linear map gave 41.4. Recovery ran at 0.2 K/h.\n",
+        "finalize": "",
+        "libs": [],
+        "x": 120,
+        "y": 60,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "792d6ba53c0e4cbf",
+        "type": "inject",
+        "z": "01c1e279c79fe308",
+        "name": "",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "10",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 150,
+        "y": 220,
+        "wires": [
+            [
+                "c5f2cf258a4a0914"
+            ]
+        ]
+    },
+    {
+        "id": "c5f2cf258a4a0914",
+        "type": "function",
+        "z": "01c1e279c79fe308",
+        "name": "send zones",
+        "func": "msg.payload=flow.get('zones');\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 330,
+        "y": 220,
+        "wires": [
+            [
+                "3e01c6ce776d598a"
+            ]
+        ]
+    },
+    {
+        "id": "3e01c6ce776d598a",
+        "type": "split",
+        "z": "01c1e279c79fe308",
+        "name": "split by zone",
+        "splt": "\\n",
+        "spltType": "str",
+        "arraySplt": 1,
+        "arraySpltType": "len",
+        "stream": false,
+        "addname": "topic",
+        "x": 490,
+        "y": 160,
+        "wires": [
+            [
+                "f92c0dbe783b78b9"
+            ]
+        ]
+    },
+    {
+        "id": "f92c0dbe783b78b9",
+        "type": "api-current-state",
+        "z": "01c1e279c79fe308",
+        "name": "Get virt thermostat for zone",
+        "server": "efa2d3ede9cd45f8",
+        "version": 3,
+        "outputs": 1,
+        "halt_if": "",
+        "halt_if_type": "str",
+        "halt_if_compare": "is",
+        "entity_id": "climate.{{payload}}_thermostat",
+        "state_type": "str",
+        "blockInputOverrides": false,
+        "outputProperties": [
+            {
+                "property": "data",
+                "propertyType": "msg",
+                "value": "",
+                "valueType": "entity"
+            },
+            {
+                "property": "topic",
+                "propertyType": "msg",
+                "value": "",
+                "valueType": "triggerId"
+            }
+        ],
+        "for": "0",
+        "forType": "num",
+        "forUnits": "minutes",
+        "override_topic": false,
+        "state_location": "payload",
+        "override_payload": "msg",
+        "entity_location": "data",
+        "override_data": "msg",
+        "x": 680,
+        "y": 220,
+        "wires": [
+            [
+                "b77fd29d6001693c"
+            ]
+        ]
+    },
+    {
+        "id": "b77fd29d6001693c",
+        "type": "function",
+        "z": "01c1e279c79fe308",
+        "name": "record thermostat + health",
+        "func": "var zone = msg.payload\nvar e    = msg.data\nvar now  = Date.now()\n\nvar th = flow.get('thermostats') || {}\nvar ss = flow.get('sensor_state') || {}\nvar stuck_ms = flow.get('stuck_ms')\n\nth[zone] = e\nflow.set('thermostats', th)\n\n// ---- stuck-sensor detection -----------------------------------------\n// TIER 1 (immediate, reliable): current_temperature is null/undefined.\n//   Happens when the source sensor goes 'unavailable'. Requires expire_after\n//   on the MQTT sensor in HA -- otherwise a silent BLE sensor holds its last\n//   value forever and this tier never fires.\n// TIER 2 (backstop, slow): reading unchanged for stuck_ms (12 h).\n//   Deliberately long: healthy sensors were measured flat for up to 7.7 h.\n// last_updated is recorded for observability only -- it freezes in lockstep\n// with the value, so it is NOT a usable liveness signal for these entities.\nvar cur = e.attributes.current_temperature\nvar st  = ss[zone] || {}\nif (typeof cur !== 'number' || !isFinite(cur)) {\n    st.lastVal = null\n    if (!st.lastChangeTs) st.lastChangeTs = now\n} else if (st.lastVal === undefined || st.lastVal === null || cur !== st.lastVal) {\n    st.lastVal = cur\n    st.lastChangeTs = now\n}\nst.ageMs = now - (st.lastChangeTs || now)\nst.stuck = (st.lastVal === null) || (st.ageMs >= stuck_ms)\nst.haLastUpdated = e.last_updated || null\nst.haAgeMs = e.last_updated ? (now - new Date(e.last_updated).getTime()) : null\nss[zone] = st\nflow.set('sensor_state', ss)\n\n// ---- effective temperatures -----------------------------------------\n// a stuck zone inherits the mean of the healthy zones\nvar vals = []\nObject.keys(th).forEach(function (z) {\n    var s = ss[z], c = th[z].attributes.current_temperature\n    if (s && !s.stuck && typeof c === 'number' && isFinite(c)) vals.push(c)\n})\nvar avg = vals.length ? vals.reduce(function (a, b) { return a + b }, 0) / vals.length : null\n\nvar eff = {}\nObject.keys(th).forEach(function (z) {\n    var s = ss[z], c = th[z].attributes.current_temperature\n    eff[z] = (s && s.stuck) ? avg : c\n})\nflow.set('effective', eff)\n\nvar nstuck = Object.keys(ss).filter(function (z) { return ss[z].stuck }).length\nnode.status({ fill: nstuck ? 'yellow' : 'green', shape: 'ring',\n    text: zone + ' ' + cur + ' | stuck:' + nstuck + ' | avg:' + (avg === null ? '-' : avg.toFixed(1)) })\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 920,
+        "y": 180,
+        "wires": [
+            [
+                "cb4904f12dcd3518"
+            ]
+        ]
+    },
+    {
+        "id": "06a0cc68f527e931",
+        "type": "api-current-state",
+        "z": "01c1e279c79fe308",
+        "name": "TRV control enabled",
+        "server": "efa2d3ede9cd45f8",
+        "version": 3,
+        "outputs": 2,
+        "halt_if": "true",
+        "halt_if_type": "bool",
+        "halt_if_compare": "is",
+        "entity_id": "input_boolean.trv_control_enabled",
+        "state_type": "habool",
+        "blockInputOverrides": false,
+        "outputProperties": [],
+        "for": "0",
+        "forType": "num",
+        "forUnits": "minutes",
+        "override_topic": false,
+        "state_location": "",
+        "override_payload": "none",
+        "entity_location": "",
+        "override_data": "none",
+        "x": 1700,
+        "y": 300,
+        "wires": [
+            [
+                "5bdfce97f68d083f"
+            ],
+            []
+        ],
+        "info": "Authority check, deliberately the LAST node before the PI function.\nIt used to sit four nodes upstream with a 5 s delay and another HA query in between,\nso the PI could run on an admission granted up to 40 s earlier. Measured 17 Nov:\nthe switch was turned off at 19:14:27 and the PI still ran at 19:15:05, reclosing\nfive valves that the surrender handler had just opened.\nA control law must not advance its own state when it is not in control: the PI owns\ntrv_state, so the authority check has to be adjacent to it, not upstream of a queue.\nThe boiler loop has always been correct by construction, its gate feeds the PID node\ndirectly and sends nothing when disabled.\nstate_location/override_* are blank so the boolean's own state does not overwrite\nmsg.payload and msg.data, which the PI needs."
+    },
+    {
+        "id": "cb4904f12dcd3518",
+        "type": "delay",
+        "z": "01c1e279c79fe308",
+        "name": "ratelim topic 1msg/2 min",
+        "pauseType": "timed",
+        "timeout": "5",
+        "timeoutUnits": "seconds",
+        "rate": "1",
+        "nbRateUnits": "2",
+        "rateUnits": "minute",
+        "randomFirst": "1",
+        "randomLast": "5",
+        "randomUnits": "seconds",
+        "drop": true,
+        "allowrate": false,
+        "outputs": 1,
+        "x": 1350,
+        "y": 160,
+        "wires": [
+            [
+                "345a74a03954ccbb"
+            ]
+        ]
+    },
+    {
+        "id": "5bdfce97f68d083f",
+        "type": "function",
+        "z": "01c1e279c79fe308",
+        "name": "TRV setpoint (PI)",
+        "func": "// Per-zone PI on the ROOM sensor. Output is the TRV's commanded setpoint.\n// The TRV runs its own internal loop on its own (biased) sensor; the integral here\n// absorbs that bias. Writes are gated by trv_write_step so the command settles\n// instead of chattering, which is what the previous 5x-amplified version did.\nvar zone = msg.payload\nvar e    = msg.data\nvar trv  = 'climate.trv_' + zone\nvar now  = Date.now()\n\nvar eff = flow.get('effective') || {}\nvar ts  = flow.get('trv_state') || {}\n\nvar off_t  = flow.get('trv_off_temp')\nvar kp     = flow.get('trv_kp')\nvar ti_s   = flow.get('trv_ti_s')\nvar iclamp = flow.get('trv_integral_clamp')\nvar imin   = flow.get('trv_integral_min')\nvar dead   = flow.get('trv_deadband_k')\nvar step   = flow.get('trv_write_step')\nvar lo     = flow.get('trv_min_setpoint')\nvar hi     = flow.get('trv_max_setpoint')\n\nvar st = ts[zone] || { integral: 0, lastSent: null, lastTs: now }\nif (st.integral < imin) st.integral = imin   // re-clamp state from before this limit existed\nvar dt = (now - (st.lastTs || now)) / 1000\nst.lastTs = now\n\nvar target\n\n// Key on MODE (data.state), not hvac_action. A generic_thermostat reports\n// hvac_action 'off' transiently while its mode is being changed, and the old code\n// latched the shut setpoint on that: measured 07 Oct, livingroom sat at 16 for\n// 110 min with the room 1 K below target.\nvar tgtForHead = e.attributes.temperature\nvar errForHead = 0\nvar pTerm = 0\n\nif (msg.data.state === 'off') {\n    target = off_t\n    // Decay rather than zero. A zone goes off for two very different reasons and\n    // this node cannot tell them apart: a scheduled setback, or a presence dropout\n    // where the radar loses a person who is in the room but still. Zeroing threw\n    // away the whole accumulated bias on every short gap. Measured 15 Nov 20:46:\n    // the bedroom radar went absent 38 min, an integral of 4.37 built over 90 min\n    // was discarded, and the room then sat 0.3 K short until morning because the\n    // command from a zero integral is barely above target.\n    // Over 30 days bedroom had 34 off-periods under 2 h against a median of 228 min\n    // and nursery 60 against a median of 95 min, so both populations are common.\n    // tau = 2 h keeps 73% over 38 min, 14% over a 4 h setback, ~0 overnight.\n    st.integral *= Math.exp(-dt / flow.get('trv_off_decay_s'))\n} else {\n    var tgt = e.attributes.temperature\n    var cur = (eff[zone] !== undefined && eff[zone] !== null) ? eff[zone]\n                                                             : e.attributes.current_temperature\n    if (typeof tgt !== 'number' || typeof cur !== 'number' || !isFinite(tgt) || !isFinite(cur)) {\n        ts[zone] = st; flow.set('trv_state', ts)\n        node.status({ fill: 'yellow', shape: 'ring', text: zone + ' bad data, holding' })\n        return [null, null, null]                          // hold the last command, do not thrash\n    }\n    var err = tgt - cur                      // positive means the room wants heat\n    errForHead = err\n    // soft deadband: subtract it rather than zeroing, so the proportional term stays\n    // continuous. A hard deadband makes the command jump by kp*dead at the edge, and\n    // every crossing then costs a write.\n    if (err > dead) err = err - dead\n    else if (err < -dead) err = err + dead\n    else err = 0\n    pTerm = kp * err\n\n    // anti-windup: integrate only while the command is inside its limits\n    var tentative = tgt + kp * err + st.integral\n    if (dt > 0 && dt < 600 && tentative > lo && tentative < hi) {\n        st.integral = st.integral + err * dt / ti_s\n        if (st.integral > iclamp) st.integral = iclamp\n        if (st.integral < imin)   st.integral = imin\n    }\n    target = tgt + kp * err + st.integral\n}\n\n// Headroom test (saturation condition). The question is whether a zone\n// ever runs out of valve authority, which would mean the right response to a cold\n// room is to open the valve rather than raise the whole house's water temperature.\n// Measured over 7 days to 22 Oct: minimum headroom was 2-5 K, so saturation never\n// occurred and the rule would have been inert. Export it and watch the cold week.\n// Ceiling is the ACHIEVABLE max (tgt + kp*err + iclamp), not the configured clamp,\n// because the integral clamp binds first.\nvar ceiling = Math.min(hi, tgtForHead + kp * Math.max(0, errForHead) + iclamp)\nvar headroom = ceiling - target\nnode.send([null, { payload: { op: 'set', val: headroom,\n                              labels: { zone: zone, flag: 'cmd_headroom' } } }, null])\n\nif (target < lo) target = lo\nif (target > hi) target = hi\n// Controller intent, exported every cycle before rounding and before the write dedupe,\n// so it is visible even when no write happens. push = command - zone target.\nvar intent = { cmd_raw: target, p_term: pTerm, integral: st.integral }\nif (typeof tgtForHead === 'number') intent.push = target - tgtForHead\nObject.keys(intent).forEach(function (k) {\n    node.send([null, { payload: { op: 'set', val: intent[k], labels: { zone: zone, flag: k } } }, null])\n})\ntarget = Math.round(target * 2) / 2          // TRVs take 0.5 C steps\n\n// Compare against what the TRV ACTUALLY REPORTS, not what we last sent.\n// st.lastSent alone is not self-correcting: measured 21 Oct, livingroom was\n// written to 16 on its mode change, the device reverted to 18.5 six minutes\n// later, and the dedupe then suppressed every rewrite for 9.9 h. Bedroom held\n// 16.5 for 7.3 h the same way.\nvar actual = (msg.trv && msg.trv.attributes && typeof msg.trv.attributes.temperature === 'number')\n             ? msg.trv.attributes.temperature : null\n\n// Missing TRV state means the device did not report, so resend rather than suppress:\n// an unreachable valve is exactly the one whose command most needs reasserting.\nif (actual !== null && Math.abs(target - actual) < step) {\n    ts[zone] = st; flow.set('trv_state', ts)\n    node.status({ fill: 'grey', shape: 'ring',\n        text: zone + ' ' + target.toFixed(1) + ' = dev ' + (actual === null ? '?' : actual)\n              + ' (no write, I=' + st.integral.toFixed(2) + ')' })\n    return [null, null, null]\n}\n\nst.lastSent = target\nts[zone] = st\nflow.set('trv_state', ts)\n\nmsg.topic = trv\nmsg.data  = { entity_id: trv, temperature: target }\nnode.status({ fill: 'green', shape: 'dot',\n    text: zone + ' -> ' + target.toFixed(1) + ' (I=' + st.integral.toFixed(2) + ')' })\nnode.log('TRV ' + trv + ' -> ' + target + ' (was ' + (actual === null ? 'unknown' : actual)\n         + ', I=' + st.integral.toFixed(2) + ')')\n// Every write, including a re-send of the same value after the device reverted.\n// Writes go to a real counter (3rd output) so increase() survives restarts.\nnode.send([null, { payload: { op: 'set', val: target, labels: { zone: zone, flag: 'cmd_sent' } } }, null])\nnode.send([null, null, { payload: { op: 'inc', val: 1, labels: { zone: zone } } }])\nreturn [msg, null, null];\n",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1560,
+        "y": 220,
+        "wires": [
+            [
+                "6b1b20249668b16b"
+            ],
+            [
+                "b6b37a6a1fa12831"
+            ],
+            [
+                "a1c3e5f7b9d10006"
+            ]
+        ]
+    },
+    {
+        "id": "6b1b20249668b16b",
+        "type": "api-call-service",
+        "z": "01c1e279c79fe308",
+        "name": "set TRV",
+        "server": "efa2d3ede9cd45f8",
+        "version": 7,
+        "debugenabled": false,
+        "action": "climate.set_temperature",
+        "floorId": [],
+        "areaId": [],
+        "deviceId": [],
+        "entityId": [],
+        "labelId": [],
+        "data": "data",
+        "dataType": "jsonata",
+        "mergeContext": "",
+        "mustacheAltTags": false,
+        "outputProperties": [],
+        "queue": "none",
+        "blockInputOverrides": false,
+        "domain": "climate",
+        "service": "set_temperature",
+        "x": 1790,
+        "y": 220,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "e80c244412ee5312",
+        "type": "inject",
+        "z": "01c1e279c79fe308",
+        "name": "",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "15",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 150,
+        "y": 420,
+        "wires": [
+            [
+                "2f8033dbb20f96b7"
+            ]
+        ]
+    },
+    {
+        "id": "2f8033dbb20f96b7",
+        "type": "function",
+        "z": "01c1e279c79fe308",
+        "name": "Select leader and feed to PID",
+        "func": "var th  = flow.get('thermostats') || {}\nvar ss  = flow.get('sensor_state') || {}\nvar eff = flow.get('effective') || {}\n\nvar backup_temp = flow.get('thermostat_off_temp')\n\nvar zones = {}\nObject.keys(th).forEach(function (z) { zones[z] = th[z] })\nzones['backup'] = { entity_id: 'climate.backup', state: 'heat',\n    attributes: { temperature: backup_temp, current_temperature: backup_temp + 3 } }\n\nvar max_demand = -100, leader = 'NOTSET', new_setpoint = backup_temp\nvar demands = {}, curs = {}\n\nObject.keys(zones).forEach(function (zone) {\n    var t   = zones[zone]\n    var tgt = t.attributes.temperature\n    if (t.state === 'off') tgt = backup_temp   // mode, not hvac_action (see TRV node)\n    var cur = (zone === 'backup') ? t.attributes.current_temperature\n            : ((eff[zone] !== undefined && eff[zone] !== null) ? eff[zone]\n                                                              : t.attributes.current_temperature)\n    // An OFF zone keeps its substituted 16 C target only as a FROST FLOOR. While it\n    // is comfortably above that floor it must not lead: it would report a large\n    // positive error (a room at 17.8 against 16 reports +1.8) which tells the PID the\n    // house is too warm and winds the integral to the +pb/2 clamp. Measured over\n    // 14 days: 2.2 h of off-zone leadership, every sample with proportional > +0.5,\n    // median +1.80. Below floor+margin the zone stays eligible, so frost protection\n    // is unchanged: at 15.5 C its demand is +0.5 and it still wins and still calls heat.\n    if (zone !== 'backup' && t.state === 'off' &&\n        typeof cur === 'number' && cur >= backup_temp + flow.get('off_lead_margin')) {\n        return\n    }\n    if (typeof tgt !== 'number' || typeof cur !== 'number' || !isFinite(tgt) || !isFinite(cur)) {\n        node.warn('skipping ' + zone + ': tgt=' + tgt + ' cur=' + cur)\n        return\n    }\n    var demand = tgt - cur\n    if (Math.abs(demand) > 15) {\n        node.error('bad demand for ' + zone, msg)\n        node.warn('bad demand ' + demand.toFixed(1) + ' for ' + zone + ' (tgt ' + tgt + ', cur ' + cur + ')')\n        return\n    }\n    demands[zone] = demand\n    curs[zone] = cur\n    if (demand > max_demand) { leader = zone; max_demand = demand; new_setpoint = tgt }\n})\n\nif (leader === 'NOTSET') {\n    node.error('no usable zone for leader selection', msg)\n    node.status({ fill: 'red', shape: 'ring', text: 'no usable zone' })\n    return null\n}\n\nvar stuck = Object.keys(ss).filter(function (z) { return ss[z].stuck })\nvar out = {\n    setpoint: new_setpoint,\n    payload:  curs[leader],\n    leader:   leader,\n    demands:  demands,\n    stuck:    stuck\n}\n\n// --- integral correction on a configuration change --------------------------\n// The integral accumulates against the leader's error. When demand drops for a\n// reason that is not the heating system's own doing, that history is stale and at\n// ti=5000 s it takes hours to unwind, commanding heat into a satisfied house.\n// Two kinds of event qualify, both treated the same way.\n//\n// 1. A scheduled or manual change to THE ZONE THAT WAS LEADING: a cron, a presence\n//    flip, a target edit. Config is mode plus target, held per zone.\n//    The gate is the PREVIOUS leader's own entry, not the house as a whole. When\n//    the lead passes between two zones the error step is the gap between two\n//    different rooms, and nothing physical changed; the correction must not fire\n//    on that. Keying on any zone's config let it back in: on 8 Nov, 19:27 to\n//    19:58, nursery (18.7/19.0) flickered into the lead for two cycles at a time\n//    while bedroom (18.5/20.0) was the real leader, and presence flips elsewhere\n//    opened the gate. Three corrections stacked the integral 0.28 -> 3.27 against\n//    a clamp of 3.0 and cut the command 58 -> 33 C with the coldest room 1.5 K\n//    short. Requiring the departing leader's own entry to have changed keeps every\n//    legitimate case (bedroom goes off, the lead passes to nursery, the house\n//    genuinely needs less heat) and rejects the swap.\n//    Step threshold 0.8 K, from 7 days: 175 config changes, 23 produced a downward\n//    step, and the sizes split cleanly with nothing between 0.60 and 0.80. A manual\n//    +-1 K comfort edit shows up as 0.6 K or less, because lowering one zone's\n//    target usually passes the lead to another zone and the step is the gap\n//    between the two, not the size of the edit.\n//\n// 2. A new heat source: a fireplace, or sun through the skylights. The house has\n//    gained heat the controller did not command, so the history is just as stale.\n//    This one is gradual, not stepwise, so the rise over pid_rise_window_s supplies\n//    the step instead.\n//    Measured over 21 days: heating alone never moved any zone more than 1.0 K per\n//    30 min. The boiler never ran above 60 percent of a 30 min window at a command\n//    of 55 or more, so the real heating ceiling is above what was observed and the\n//    threshold allows for it. Replaying 25 Oct fired on both the afternoon sun\n//    (+2.00) and the fire that evening (+2.60).\nvar now = Date.now()\n\nvar cfg = {}\nObject.keys(zones).forEach(function (z) {\n    var t = zones[z]\n    cfg[z] = (t.state === 'off' ? 'off' : 'heat') + ':' + t.attributes.temperature\n})\nvar prevCfg    = flow.get('pid_cfg')\nvar prevLeader = flow.get('pid_prev_leader')\nflow.set('pid_cfg', cfg)\nflow.set('pid_prev_leader', leader)\n\n// Rolling per-zone temperature history, used only for the rise test.\nvar riseWin = flow.get('pid_rise_window_s') * 1000\nvar riseK   = flow.get('pid_rise_k')\nvar hist = flow.get('pid_temp_hist') || {}\nvar riseZone = null, riseAmt = 0\nObject.keys(curs).forEach(function (z) {\n    if (z === 'backup') return\n    var h = hist[z] || []\n    h.push([now, curs[z]])\n    while (h.length > 1 && now - h[0][0] > riseWin) h.shift()\n    hist[z] = h\n    if (now - h[0][0] < riseWin * 0.9) return      // not enough history yet\n    var r = curs[z] - h[0][1]\n    if (r >= riseK && r > riseAmt) { riseZone = z; riseAmt = r }\n})\nflow.set('pid_temp_hist', hist)\n\n// Fire once per episode. A rise stays above the threshold for as long as the\n// window is wide, so without a latch this would correct on every 15 s cycle. The\n// latch clears once the zone has stopped climbing, at half the threshold.\nvar latch = flow.get('pid_rise_latch') || null\nif (latch !== null && latch !== riseZone) {\n    var lh = hist[latch] || []\n    if (lh.length < 2 || curs[latch] === undefined ||\n        curs[latch] - lh[0][1] < riseK / 2) { latch = null; flow.set('pid_rise_latch', null) }\n}\nvar riseEvent = (riseZone !== null && latch !== riseZone)\nif (riseEvent) flow.set('pid_rise_latch', riseZone)\n\nvar err     = new_setpoint - curs[leader]\nvar prevErr = flow.get('pid_prev_err')\nvar prevI   = flow.get('pid_last_integral')\nflow.set('pid_prev_err', err)\n\nvar step = null, why = ''\nif (prevErr !== undefined && prevErr !== null) {\n    var s = err - prevErr\n    var thr = flow.get('pid_step_thresh')\n    // BOTH directions, on the same config-change gate.\n    // Down: demand fell for a reason that is not the heating system's doing, so the\n    // accumulated history is stale and would command heat into a satisfied house.\n    // Up: demand rose, and if the integral is sitting at the suppression clamp the\n    // loop must unwind up to pb/2 before it can respond. Measured 17 Nov: drawing_room\n    // and nursery are unoccupied, so overnight the only leader is bedroom at its\n    // 18.0 night target while sitting 19.2, which pins the integral at +3.00. Raising\n    // bedroom to 19.5 at 02:00 then took two hours of unwinding before the command\n    // reached a sensible level, and the room needed 5.5 h to recover 1.7 K.\n    // Requirement: a cold room gets heat now, not after the integral unwinds.\n    // An earlier symmetric version was simulated in November and raised gas sharply,\n    // but that one triggered on the error step ALONE and so fired on every leader\n    // swap. This fires only when the departing leader's own mode or target changed.\n    if (Math.abs(s) >= thr) {\n        var leadChanged = (prevCfg !== undefined && prevCfg !== null &&\n                           prevLeader !== undefined && prevLeader !== null &&\n                           prevCfg[prevLeader] !== undefined &&\n                           prevCfg[prevLeader] !== cfg[prevLeader])\n        if (leadChanged) {\n            step = s\n            why = 'config change in ' + prevLeader + ' (' + prevCfg[prevLeader] + ' -> ' +\n                  cfg[prevLeader] + '), error step ' + s.toFixed(2) + ' K (' +\n                  prevErr.toFixed(2) + ' -> ' + err.toFixed(2) + ')'\n        } else if (prevLeader !== leader) {\n            node.warn('error step ' + s.toFixed(2) + ' K ignored: lead passed ' +\n                      prevLeader + ' -> ' + leader + ' with no config change in ' + prevLeader)\n        }\n    }\n}\nif (step === null && riseEvent && err < 0) {\n    // Only when the leader is at or above target. A fire in one room must not cut\n    // heat to a room that is genuinely cold.\n    step = -riseAmt\n    why = 'external heat in ' + riseZone + ', +' + riseAmt.toFixed(2) + ' K in ' +\n          (riseWin / 60000) + ' min'\n}\n\nif (step !== null && prevI !== undefined && prevI !== null) {\n    // The internal integral is inverted: a more positive integral lowers the\n    // output, so undoing a drop of `step` means subtracting it. The node clamps to\n    // +-pb/2 itself, and its anti-windup lock clears on its own as the room drifts\n    // (the lock test uses the live error), so no boundary guard is needed here.\n    out.integral = prevI - step\n    node.warn(why + ', integral ' + prevI.toFixed(2) + ' -> ' + (prevI - step).toFixed(2))\n}\n\nnode.log('leader: ' + leader + ', PV: ' + out.payload + ', SP: ' + out.setpoint +\n         (stuck.length ? ', stuck: ' + stuck.join(',') : ''))\nnode.status({ fill: stuck.length ? 'yellow' : 'green', shape: 'ring',\n    text: leader + ' ' + out.payload + '->' + out.setpoint +\n          (stuck.length ? ' stuck:' + stuck.length : '') })\nreturn out;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 350,
+        "y": 420,
+        "wires": [
+            [
+                "d55ab04e45d0e6df",
+                "92dba06087b01f1d",
+                "4b526ce27cae5541"
+            ]
+        ]
+    },
+    {
+        "id": "d55ab04e45d0e6df",
+        "type": "api-current-state",
+        "z": "01c1e279c79fe308",
+        "name": "Boiler control enabled",
+        "server": "efa2d3ede9cd45f8",
+        "version": 3,
+        "outputs": 2,
+        "halt_if": "true",
+        "halt_if_type": "bool",
+        "halt_if_compare": "is",
+        "entity_id": "input_boolean.boileroverrideenable",
+        "state_type": "habool",
+        "blockInputOverrides": false,
+        "outputProperties": [],
+        "for": "0",
+        "forType": "num",
+        "forUnits": "minutes",
+        "override_topic": false,
+        "state_location": "payload",
+        "override_payload": "msg",
+        "entity_location": "data",
+        "override_data": "msg",
+        "x": 640,
+        "y": 420,
+        "wires": [
+            [
+                "9af6e817af1a5649"
+            ],
+            [
+                "5b76e067cff471ce"
+            ]
+        ]
+    },
+    {
+        "id": "9af6e817af1a5649",
+        "type": "PID",
+        "z": "01c1e279c79fe308",
+        "name": "",
+        "setpoint": 21,
+        "pb": "6",
+        "ti": "5000",
+        "td": "0",
+        "integral_default": "0.45",
+        "smooth_factor": "2",
+        "max_interval": "600",
+        "enable": 1,
+        "disabled_op": 0,
+        "x": 850,
+        "y": 400,
+        "wires": [
+            [
+                "c9dfef1c80d5cbb0"
+            ]
+        ]
+    },
+    {
+        "id": "c9dfef1c80d5cbb0",
+        "type": "function",
+        "z": "01c1e279c79fe308",
+        "name": "scale_pid_output",
+        "func": "var raw = msg.payload\n// The PID clamps power to 0..1, so raw == 0 is exact and means fully satisfied.\n// Measured over 7 days: every minute spent commanding 10-20 C had boiler water\n// already hotter than the command, so none of it could produce heat.\n//\n// The curve is raw^k, not linear. A linear map puts the zero-error point exactly\n// halfway between flow_min and the ceiling, so with the floor pinned at 20 the only\n// way to lower it was to lower the ceiling too (40 C zero point forces a 60 C max).\n// An exponent bends the middle down while keeping both ends, and it also matches the\n// plant: radiator output goes roughly as deltaT^1.3, so heat delivered is convex in\n// flow temperature and equal steps of PID output now buy closer to equal steps of heat.\n// Measured need: over steady hours the house actually receives 27-44 C mean water\n// (burner on and off together, CH duty only 6-31%), against 47.5 C commanded at zero\n// error under the old linear map. k=1.4 puts the zero-error point at 40.8 C.\n// Simulated on the real 14-day trace: median command 39.3 -> 32.7, hours above 55 C\n// 24.2 -> 7.2, ceiling unchanged at 75, morning recovery p90 59.2 -> 54.2.\nvar k   = flow.get('flow_exp')\nvar out = (raw <= 0) ? flow.get('flow_idle')\n                     : flow.get('flow_min') + flow.get('flow_span') * Math.pow(raw, k)\nmsg.payload = out\nnode.status({ fill: raw <= 0 ? 'grey' : 'green', shape: 'ring',\n    text: raw.toFixed(3) + ' -> ' + out.toFixed(1) + 'C' })\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1020,
+        "y": 400,
+        "wires": [
+            [
+                "0d9573b665b7ab06",
+                "908b4df08ff6f5a1"
+            ]
+        ]
+    },
+    {
+        "id": "5b76e067cff471ce",
+        "type": "change",
+        "z": "01c1e279c79fe308",
+        "name": "Set 0 to surrender boiler control",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "0",
+                "tot": "num"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 910,
+        "y": 460,
+        "wires": [
+            [
+                "0d9573b665b7ab06"
+            ]
+        ]
+    },
+    {
+        "id": "0d9573b665b7ab06",
+        "type": "api-call-service",
+        "z": "01c1e279c79fe308",
+        "name": "Set OTGW override",
+        "server": "efa2d3ede9cd45f8",
+        "version": 7,
+        "debugenabled": false,
+        "action": "climate.set_temperature",
+        "floorId": [],
+        "areaId": [],
+        "deviceId": [],
+        "entityId": [
+            "climate.boiler_direct"
+        ],
+        "labelId": [],
+        "data": "{\"temperature\": payload}",
+        "dataType": "jsonata",
+        "mergeContext": "",
+        "mustacheAltTags": false,
+        "outputProperties": [],
+        "queue": "none",
+        "blockInputOverrides": false,
+        "domain": "climate",
+        "service": "set_temperature",
+        "x": 1250,
+        "y": 460,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "908b4df08ff6f5a1",
+        "type": "function",
+        "z": "01c1e279c79fe308",
+        "name": "format_pid_components",
+        "func": "//{ \"payload\": 10.07316516362641, \n//\"pv\": 19.6, \n//\"setpoint\": 19.5, \n//\"proportional\": 0.10000000000000142, \n//\"integral\": 0.40165963888889067, \n//\"derivative\": -0.002785256790836854, \n//\"smoothed_value\": 19.60120696627247, \n//\"_msgid\": \"89356c052bdf15c6\" }\nflow.set('pid_last_integral', msg.integral)\nnode.status({fill:\"green\",shape:\"ring\",text: JSON.stringify(msg)});\n['setpoint',\n    'pv',\n    'proportional',\n    'integral',\n    'derivative',\n    'payload'].forEach( function(p) {\n        var m=\n        {'payload':{\n            'op':'set',\n            'val': RED.util.getMessageProperty(msg,p),\n            'labels':\n                {\"component\": p}\n            }}\n        node.send(m);\n        }\n    )\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1270,
+        "y": 340,
+        "wires": [
+            [
+                "0dd2ecf9fc51c340"
+            ]
+        ]
+    },
+    {
+        "id": "0dd2ecf9fc51c340",
+        "type": "prometheus-exporter",
+        "z": "01c1e279c79fe308",
+        "name": "metric pid_components",
+        "metric": "f6b8af8996d0b789",
+        "x": 1510,
+        "y": 400,
+        "wires": []
+    },
+    {
+        "id": "92dba06087b01f1d",
+        "type": "function",
+        "z": "01c1e279c79fe308",
+        "name": "format heating demand (all zones)",
+        "func": "// export demand for EVERY zone, not just the leader,\n// so per-zone series stay live instead of freezing at their last leadership\nvar d = msg.demands || {}\nObject.keys(d).forEach(function (zone) {\n    node.send({ payload: { op: 'set', val: d[zone], labels: { zone: zone } } })\n})\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 640,
+        "y": 540,
+        "wires": [
+            [
+                "5d3b9f2b7c6e10da"
+            ]
+        ]
+    },
+    {
+        "id": "5d3b9f2b7c6e10da",
+        "type": "prometheus-exporter",
+        "z": "01c1e279c79fe308",
+        "name": "heating_demand metric",
+        "metric": "9222a985d6745435",
+        "x": 900,
+        "y": 540,
+        "wires": []
+    },
+    {
+        "id": "4b526ce27cae5541",
+        "type": "function",
+        "z": "01c1e279c79fe308",
+        "name": "format zone flags",
+        "func": "var stuck = msg.stuck || []\nvar zones = flow.get('zones') || []\nzones.forEach(function (z) {\n    node.send({ payload: { op: 'set', val: stuck.indexOf(z) >= 0 ? 1 : 0,\n                           labels: { zone: z, flag: 'sensor_stuck' } } })\n})\n\n// is_leader: 1 for the zone feeding the PID, 0 for all the others, written EVERY\n// cycle for every configured zone plus backup.\n// Grafana used to infer the leader from heating_demand, which breaks twice. A zone\n// skipped by off_lead_margin stops appearing in msg.demands, so its series stops\n// updating and Prometheus carries the last value for 5 min: on 26 Nov that showed\n// drawing_room leading at 03:10 when the flow's own log says bedroom did. And a\n// comparison against max() returns EVERY tied series, so exact ties drew two zones\n// as leader at once (14 ties in one 13 h window). A flag written every cycle cannot\n// go stale, and the flow picks exactly one leader so it cannot tie.\nzones.concat(['backup']).forEach(function (z) {\n    node.send({ payload: { op: 'set', val: (z === msg.leader) ? 1 : 0,\n                           labels: { zone: z, flag: 'is_leader' } } })\n})\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 640,
+        "y": 610,
+        "wires": [
+            [
+                "b6b37a6a1fa12831"
+            ]
+        ]
+    },
+    {
+        "id": "b6b37a6a1fa12831",
+        "type": "prometheus-exporter",
+        "z": "01c1e279c79fe308",
+        "name": "heating_flags metric",
+        "metric": "294af43d41f8c30a",
+        "x": 900,
+        "y": 610,
+        "wires": []
+    },
+    {
+        "id": "1fc12119f8a929a3",
+        "type": "catch",
+        "z": "01c1e279c79fe308",
+        "name": "",
+        "scope": null,
+        "uncaught": false,
+        "x": 150,
+        "y": 700,
+        "wires": [
+            [
+                "77ee8175aaa329fe"
+            ]
+        ]
+    },
+    {
+        "id": "77ee8175aaa329fe",
+        "type": "function",
+        "z": "01c1e279c79fe308",
+        "name": "format error",
+        "func": "var res={\n    \"op\": \"inc\",\n        \"val\": 1,\n            \"labels\": {\n        \"node_id\": msg.error.source.id,\n        \"node_name\": msg.error.source.name,\n        \"node_type\": msg.error.source.type,\n        \"message\": msg.error.message\n    }\n}\nmsg.payload=res\nnode.status({fill:\"red\",shape:\"ring\",text:JSON.stringify(msg)});\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 360,
+        "y": 700,
+        "wires": [
+            [
+                "2a591a31cd82d55b"
+            ]
+        ]
+    },
+    {
+        "id": "2a591a31cd82d55b",
+        "type": "prometheus-exporter",
+        "z": "01c1e279c79fe308",
+        "name": "",
+        "metric": "52d5f760487faf53",
+        "x": 600,
+        "y": 700,
+        "wires": []
+    },
+    {
+        "id": "345a74a03954ccbb",
+        "type": "api-current-state",
+        "z": "01c1e279c79fe308",
+        "name": "get TRV reported setpoint",
+        "server": "efa2d3ede9cd45f8",
+        "version": 3,
+        "outputs": 1,
+        "halt_if": "",
+        "halt_if_type": "str",
+        "halt_if_compare": "is",
+        "entity_id": "climate.trv_{{payload}}",
+        "state_type": "str",
+        "blockInputOverrides": false,
+        "outputProperties": [
+            {
+                "property": "trv",
+                "propertyType": "msg",
+                "value": "",
+                "valueType": "entity"
+            }
+        ],
+        "for": "0",
+        "forType": "num",
+        "forUnits": "minutes",
+        "override_topic": false,
+        "state_location": "",
+        "override_payload": "none",
+        "entity_location": "trv",
+        "override_data": "msg",
+        "x": 1510,
+        "y": 220,
+        "wires": [
+            [
+                "06a0cc68f527e931"
+            ]
+        ]
+    },
+    {
+        "id": "a1c3e5f7b9d10002",
+        "type": "inject",
+        "z": "01c1e279c79fe308",
+        "name": "publish deps at start",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "60",
+        "crontab": "",
+        "once": true,
+        "onceDelay": "5",
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 160,
+        "y": 780,
+        "wires": [
+            [
+                "a1c3e5f7b9d10003"
+            ]
+        ]
+    },
+    {
+        "id": "a1c3e5f7b9d10003",
+        "type": "function",
+        "z": "01c1e279c79fe308",
+        "name": "format entity dependencies",
+        "func": "// Publishes heating_entity_dependency{entity,role,zone} = 1 for every HA entity this\n// tab depends on. Prometheus joins it with homeassistant_entity_available to alert\n// on unavailable dependencies, because HA labels are not exported by its integration.\n// Zone thermostats and TRVs are derived from 'zones', so a new zone is covered.\n// Source sensors must be listed by hand: a generic_thermostat stays available when its\n// target_sensor dies (only current_temperature goes null), and target_sensor is not\n// in the entity attributes. Keep in sync with /config/thermostats.yaml.\nvar zone_sensors = {\n    workshop:   ['sensor.workshop_temperature'],\n    livingroom: ['sensor.livingroom_temperature', 'sensor.living_room_sonoff_temp_temperature'],\n    bedroom:    ['sensor.bedroom_sensor_temperature'],\n    nursery:    ['sensor.nursery_temperature'],\n    drawing_room:  ['sensor.drawing_room_temperature']\n}\nvar deps = [\n    { entity: 'climate.boiler_direct',             role: 'boiler',         zone: 'none' },\n    { entity: 'input_boolean.boileroverrideenable', role: 'control_switch', zone: 'none' },\n    { entity: 'input_boolean.trv_control_enabled',  role: 'control_switch', zone: 'none' }\n]\nvar zones = flow.get('zones') || []\nzones.forEach(function (z) {\n    deps.push({ entity: 'climate.' + z + '_thermostat', role: 'zone_thermostat', zone: z })\n    deps.push({ entity: 'climate.trv_' + z,             role: 'trv',             zone: z })\n    if (!zone_sensors[z]) node.error('no source sensor listed for zone ' + z, msg)\n    ;(zone_sensors[z] || []).forEach(function (s) {\n        deps.push({ entity: s, role: 'zone_sensor', zone: z })\n    })\n})\ndeps.forEach(function (d) {\n    node.send({ payload: { op: 'set', val: 1, labels: d } })\n})\nnode.status({ fill: 'green', shape: 'ring', text: deps.length + ' entities' })\nreturn null;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 420,
+        "y": 780,
+        "wires": [
+            [
+                "a1c3e5f7b9d10004"
+            ]
+        ]
+    },
+    {
+        "id": "a1c3e5f7b9d10004",
+        "type": "prometheus-exporter",
+        "z": "01c1e279c79fe308",
+        "name": "heating_entity_dependency metric",
+        "metric": "a1c3e5f7b9d10001",
+        "x": 700,
+        "y": 780,
+        "wires": []
+    },
+    {
+        "id": "a1c3e5f7b9d10006",
+        "type": "prometheus-exporter",
+        "z": "01c1e279c79fe308",
+        "name": "heating_trv_writes metric",
+        "metric": "a1c3e5f7b9d10005",
+        "x": 1820,
+        "y": 280,
+        "wires": []
+    },
+    {
+        "id": "c0ffee17trvoff01",
+        "type": "server-state-changed",
+        "z": "01c1e279c79fe308",
+        "name": "trv control switched OFF",
+        "server": "efa2d3ede9cd45f8",
+        "version": 6,
+        "outputs": 1,
+        "exposeAsEntityConfig": "",
+        "entities": {
+            "entity": [
+                "input_boolean.trv_control_enabled"
+            ],
+            "substring": [],
+            "regex": []
+        },
+        "outputInitially": false,
+        "stateType": "str",
+        "ifState": "off",
+        "ifStateType": "str",
+        "ifStateOperator": "is",
+        "outputOnlyOnStateChange": true,
+        "for": "0",
+        "forType": "num",
+        "forUnits": "minutes",
+        "ignorePrevStateNull": true,
+        "ignorePrevStateUnknown": true,
+        "ignorePrevStateUnavailable": true,
+        "ignoreCurrentStateUnknown": false,
+        "ignoreCurrentStateUnavailable": false,
+        "outputProperties": [
+            {
+                "property": "payload",
+                "propertyType": "msg",
+                "value": "",
+                "valueType": "entityState"
+            }
+        ],
+        "x": 1150,
+        "y": 300,
+        "wires": [
+            [
+                "c0ffee17trvoff02"
+            ]
+        ]
+    },
+    {
+        "id": "c0ffee17trvoff02",
+        "type": "function",
+        "z": "01c1e279c79fe308",
+        "name": "open all TRVs",
+        "func": "// Fires on the input_boolean transition to off, NOT on the polled gate: that gate\n// emits every 15 s cycle while disabled and these are sleepy battery devices.\n// Opening fully is the point. Turning TRV control off means the valves are no longer\n// managed, and a valve left at its last command is still being managed, by a stale\n// one. Three cases want exactly this: manual maintenance (flushing, degassing), the\n// pump's periodic circulation while heating is off, and handing the house to the\n// hardware thermostat. Boiler control already surrenders this way (Set 0 to\n// surrender boiler control); TRV control had no such path and left valves wherever\n// they happened to be, which for an off zone is 16, i.e. shut.\nvar zones = flow.get('zones') || []\nvar open  = flow.get('trv_max_setpoint')\n// Drop the PI state so re-enabling starts clean instead of resuming with integrals\n// accumulated before the manual period.\nflow.set('trv_state', {})\nvar out = zones.map(function (z) {\n    var trv = 'climate.trv_' + z\n    return { topic: trv, data: { entity_id: trv, temperature: open } }\n})\nnode.warn('TRV control off: opening ' + zones.length + ' valves to ' + open)\nnode.status({ fill: 'blue', shape: 'dot', text: 'opened ' + zones.length + ' to ' + open })\nreturn [out];\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1350,
+        "y": 300,
+        "wires": [
+            [
+                "6b1b20249668b16b"
+            ]
+        ]
+    },
+    {
+        "id": "294af43d41f8c30a",
+        "type": "prometheus-metric-config",
+        "name": "heating_flags",
+        "help": "Per-zone sensor health flags",
+        "labels": "zone,flag",
+        "mtype": "gauge"
+    },
+    {
+        "id": "52d5f760487faf53",
+        "type": "prometheus-metric-config",
+        "name": "heating_errors",
+        "help": "Errors on heating flow",
+        "labels": "message,node_name, node_type,node_id",
+        "mtype": "counter"
+    },
+    {
+        "id": "9222a985d6745435",
+        "type": "prometheus-metric-config",
+        "name": "heating_demand",
+        "help": "Heating demand",
+        "labels": "zone",
+        "mtype": "gauge"
+    },
+    {
+        "id": "a1c3e5f7b9d10001",
+        "type": "prometheus-metric-config",
+        "name": "heating_entity_dependency",
+        "help": "HA entity the Heating v2 flow depends on (value is always 1)",
+        "labels": "entity,role,zone",
+        "mtype": "gauge"
+    },
+    {
+        "id": "a1c3e5f7b9d10005",
+        "type": "prometheus-metric-config",
+        "name": "heating_trv_writes",
+        "help": "Setpoint writes sent to each TRV by Heating v2, including re-sends",
+        "labels": "zone",
+        "mtype": "counter"
+    },
+    {
+        "id": "efa2d3ede9cd45f8",
+        "type": "server",
+        "name": "Home Assistant",
+        "version": 5,
+        "addon": false,
+        "rejectUnauthorizedCerts": false,
+        "ha_boolean": "y|yes|true|on|home|open",
+        "connectionDelay": true,
+        "cacheJson": true,
+        "heartbeat": true,
+        "heartbeatInterval": "30",
+        "areaSelector": "friendlyName",
+        "deviceSelector": "friendlyName",
+        "entitySelector": "friendlyName",
+        "statusSeparator": ": ",
+        "statusYear": "hidden",
+        "statusMonth": "short",
+        "statusDay": "numeric",
+        "statusHourCycle": "default",
+        "statusTimeFormat": "h:m",
+        "enableGlobalContextStore": false
+    },
+    {
+        "id": "f6b8af8996d0b789",
+        "type": "prometheus-metric-config",
+        "name": "pid_component",
+        "help": "PID internal variable",
+        "labels": "component",
+        "mtype": "gauge"
+    }
+]

@@ -1,0 +1,33 @@
+# climate: !include thermostats.yaml
+# One generic_thermostat per zone, named so that its entity id is climate.<zone>_thermostat.
+# The heater is a dummy: the flow reads mode, target and current_temperature and drives the
+# boiler and the TRVs itself.
+- platform: generic_thermostat
+  name: Workshop Thermostat
+  unique_id: synth_thermostat_workshop
+  heater: input_boolean.empty_switch
+  target_sensor: sensor.workshop_temperature
+
+- platform: generic_thermostat
+  name: Living Room Thermostat
+  unique_id: synth_thermostat_livingroom
+  heater: input_boolean.empty_switch
+  target_sensor: sensor.livingroom_temperature
+
+- platform: generic_thermostat
+  name: Bedroom Thermostat
+  unique_id: synth_thermostat_bedroom
+  heater: input_boolean.empty_switch
+  target_sensor: sensor.bedroom_sensor_temperature
+
+- platform: generic_thermostat
+  name: Drawing Room Thermostat
+  unique_id: synth_thermostat_drawing_room
+  heater: input_boolean.empty_switch
+  target_sensor: sensor.drawing_room_temperature
+
+- platform: generic_thermostat
+  name: Nursery Thermostat
+  unique_id: synth_thermostat_nursery
+  heater: input_boolean.empty_switch
+  target_sensor: sensor.nursery_temperature

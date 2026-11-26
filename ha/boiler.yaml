@@ -1,0 +1,45 @@
+# configuration.yaml fragment. OTGW-XXXXXXXXXXXX is the OTGW-firmware MQTT unique id.
+# set_temperature on this entity publishes CS=<value>, the OpenTherm control setpoint override.
+mqtt:
+  - climate:
+    - name: "boiler-direct"
+      unique_id: boiler_direct
+      action_topic: "OTGW/value/otgw-XXXXXXXXXXXX/ch_enable"
+      action_template: "{% if value == 'ON' %}heating{% else %}idle{% endif %}"
+      icon: "mdi:water-boiler"
+      min_temp: 0.0
+      max_temp: 80.0
+      optimistic: true
+      modes:
+        - "auto"
+      precision: 0.5
+      temperature_command_topic: "OTGW/set/otgw-XXXXXXXXXXXX/command"
+      temperature_command_template: "CS={{ value }}"
+      temperature_state_topic: "OTGW/value/otgw-XXXXXXXXXXXX/TSet"
+      current_temperature_topic: "OTGW/value/otgw-XXXXXXXXXXXX/Tret"
+      temperature_unit: "C"
+
+# The OTGW drops a CS override of 8 or higher unless it is repeated at least every minute.
+automation:
+  - alias: OTGW Keepalive
+    trigger:
+      - platform: time_pattern
+        seconds: /15
+    condition:
+      - condition: state
+        entity_id: input_boolean.boileroverrideenable
+        state: "on"
+    action:
+      - service: mqtt.publish
+        data:
+          topic: OTGW/set/otgw-XXXXXXXXXXXX/command
+          payload: "CS={{ state_attr('climate.boiler_direct', 'temperature') }}"
+    mode: single
+
+input_boolean:
+  boileroverrideenable:
+    name: Boiler control enabled
+  trv_control_enabled:
+    name: TRV control enabled
+  empty_switch:
+    name: Dummy heater for generic_thermostat
